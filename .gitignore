@@ -1,0 +1,6 @@
+/venv
+/finance_analysis_output
+*.csv
+*.xlsx
+*.json
+/__pycache__
