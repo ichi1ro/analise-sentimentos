@@ -2,9 +2,11 @@ import json
 import time
 import tls_client
 from bs4 import BeautifulSoup
+from collections import defaultdict
+import os
 
-RAW_FILE = "raw_infomoney.json"
-OUTPUT_FILE = "noticias_processadas.json"
+RAW_FILE = os.path.join("pipeline_output","01_03","raw_infomoney.json")
+OUTPUT_FILE = os.path.join("pipeline_output","01_03","noticias_processadas.json")
 
 client = tls_client.Session(
     client_identifier="chrome_120",
@@ -19,7 +21,7 @@ headers = {
 CHAVES_EMPRESAS = {
     "TOTVS": ["totvs", "tots3"],
     "Locaweb": ["locaweb", "lwsa3"],
-    "Sinqia": ["sinqia", "sqia3"],
+    "Intelbras": ["intelbras", "intb3", "INTB3"],
     "Positivo Tecnologia": ["positivo", "positivo tecnologia", "posi3"]
 }
 
@@ -81,7 +83,6 @@ def processar_noticias():
                 data_publicacao = extrair_data(soup)
                 conteudo = extrair_texto(soup)
 
-                # 🔎 aplicar filtro por conteúdo
                 if noticia_relevante(conteudo, empresa):
                     print("    ✔ Relevante — salva.")
                     noticias_final.append({
