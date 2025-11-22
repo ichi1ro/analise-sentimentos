@@ -1,17 +1,27 @@
+#!/usr/bin/env python3
 import json
-import tls_client
 import time
+import tls_client
+from bs4 import BeautifulSoup
+from collections import defaultdict
+import os
 
-# -------- CONFIG --------
+# Diretório consolidado 01_03 (somente RAW)
+BASE_OUT_01_03 = "pipeline_output/01_03"
+os.makedirs(BASE_OUT_01_03, exist_ok=True)
 
-OUTPUT_FILE = "raw_infomoney.json"
+# Arquivo de saída RAW (não processado ainda)
+RAW_OUTPUT = os.path.join(BASE_OUT_01_03, "raw_infomoney.json")
 
-# tag_id de cada empresa
+# tag_id de Intelbras (substitua pelo valor real)
+INTB3_TAG_ID = 9999  # substitua pelo tag_id real para Intelbras
+
+# Atualiza o mapeamento para incluir Intelbras
 EMPRESAS = {
     "TOTVS": 2309,
     "Positivo Tecnologia": 2702,
     "Locaweb": 1742,
-    "Sinqia": 2804
+    "Intelbras": 171631
 }
 
 headers = {
@@ -19,8 +29,6 @@ headers = {
     "Content-Type": "application/json",
     "Origin": "https://www.infomoney.com.br"
 }
-
-API_URL = "https://www.infomoney.com.br/wp-json/infomoney/v1/cards"
 
 client = tls_client.Session(
     client_identifier="chrome_120",
@@ -41,7 +49,7 @@ for empresa, tag_id in EMPRESAS.items():
         "showHat": False
     }
 
-    resposta_empresa = client.post(API_URL, headers=headers, json=payload)
+    resposta_empresa = client.post("https://www.infomoney.com.br/wp-json/infomoney/v1/cards", headers=headers, json=payload)
 
     if resposta_empresa.status_code == 200:
         dados = resposta_empresa.json()
@@ -52,9 +60,9 @@ for empresa, tag_id in EMPRESAS.items():
     
     time.sleep(1)
 
-# salvar organizado
-with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+# salvar RAW apenas (_sem processar_)
+with open(RAW_OUTPUT, "w", encoding="utf-8") as f:
     json.dump(resultado_final, f, indent=2, ensure_ascii=False)
 
-print("\n💾 RAW salvo em:", OUTPUT_FILE)
+print(f"\n💾 RAW salvo em: {RAW_OUTPUT}")
 print("🎉 Etapa 1 concluída!")
