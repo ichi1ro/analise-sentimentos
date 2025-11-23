@@ -40,6 +40,9 @@ if "%1"=="export" goto :exportcsv
 :: ----------------- Passo 4: Analyze -------------------------
 if "%1"=="analyze" goto :analyze
 
+:: ----------------- Passo 5: Pre Processamnent ---------------
+if "%1"=="textprep" goto :textprep
+
 :: ----------------- Pipeline completo ------------------------
 if "%1"=="all" goto :all
 
@@ -71,6 +74,9 @@ call venv\Scripts\activate.bat
 echo Instalando dependencias...
 pip install --upgrade pip
 pip install tls-client pandas numpy yfinance beautifulsoup4 requests lxml nltk spacy matplotlib
+
+echo Instalando modelo de linguagem do spaCy...
+python -m spacy download pt_core_news_sm
 
 echo Instalacao concluida!
 echo Para ativar o ambiente depois, use:
@@ -179,6 +185,28 @@ IF EXIST "pipeline_output/resumo_por_empresa.csv" (
 exit /b 0
 
 
+:: ============================================================
+:: PASSO 5 — Pré-processamento de texto para Sentimento
+:: ============================================================
+:textprep
+echo.
+echo ========================================
+echo [5/5] Pre-processamento de texto (05_pre_processamento.py)
+echo ========================================
+python 05_pre_processamento.py
+IF %ERRORLEVEL% NEQ 0 (
+    echo ERRO ao executar 05_pre_processamento.py
+    exit /b %ERRORLEVEL%
+)
+
+:: Copia o arquivo final para a pasta consolidada
+IF EXIST "01_03\noticias_processadas_15_PROCESSADAS.json" (
+    copy /Y "01_03\noticias_processadas_15_PROCESSADAS.json" "%OUT_01_03%\noticias_processadas_15_PROCESSADAS.json" >nul
+)
+
+echo Texto pre-processado com sucesso!
+exit /b 0
+
 
 :: ============================================================
 :: PIPELINE COMPLETO
@@ -188,6 +216,7 @@ call :fetch
 call :process
 call :exportcsv
 call :analyze
+call :textprep
 echo.
 echo ========================================
 echo Pipeline executado com sucesso!
@@ -207,6 +236,7 @@ echo   run_pipeline.cmd fetch     - Executa so a coleta
 echo   run_pipeline.cmd process   - Executa so o processamento
 echo   run_pipeline.cmd export    - Exporta CSV
 echo   run_pipeline.cmd analyze   - Faz analise financeira
+echo   run_pipeline.cmd textprep  - Pre-processa o texto para IA / Sentimento
 echo   run_pipeline.cmd all       - Roda tudo em ordem
 echo.
 echo Observação:
