@@ -1,42 +1,19 @@
 #!/usr/bin/env python3
-# 04_financial_analysis.py
-"""
-Análise de Dados Financeiros (Passo 2) para o trabalho.
-
-Dependências:
-  - yfinance, pandas, numpy, python-dateutil
-
-Uso:
-  python 04_financial_analysis.py
-
-Observação:
-  - Leitura de notícias fixa: utiliza apenas pipeline_output/01_03/noticias_processadas_15.json
-    (as 15 notícias por empresa já devem ter sido geradas pelo passo anterior).
-  - Não há fallback para outras fontes de notícias.
-"""
-
 import json
 from datetime import datetime, timedelta
 from dateutil import parser
 import pandas as pd
-import numpy as np
 import yfinance as yf
 import os
-import warnings
 
-warnings.filterwarnings("ignore")
+# ---------- CONFIG ----------
 
-# ---------- CONFIGURAÇÃO -------------
-# Saídas de 04 devem ficar em uma pasta separada
 OUTPUT_FOLDER = "pipeline_output/04_fetch"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
-# Input fixo: apenas as 15 notícias já filtradas
 INPUT_NEWS_FILE = os.path.join("pipeline_output", "01_03", "noticias_processadas_15.json")
+OUTPUT_FILE = os.path.join(OUTPUT_FOLDER, "noticias_com_precos_civis.csv")
 
-OUTPUT_PER_NEWS_CSV = os.path.join(OUTPUT_FOLDER, "noticias_com_precos.csv")
-
-# Mapeamento empresa -> ticker B3 (modifique conforme suas empresas)
 TICKER_MAP = {
     "Intelbras": "INTB3.SA",
     "TOTVS": "TOTS3.SA",
@@ -44,43 +21,28 @@ TICKER_MAP = {
     "Locaweb": "LWSA3.SA",
 }
 
-# número de dias antes/depois a capturar (já que precisamos de -2..+2)
 WINDOW_BEFORE = 2
 WINDOW_AFTER = 2
-
-# buffer extra ao baixar (para cobrir feriados e fechamento de mercado)
-BUFFER_DAYS = 7
-
-# -------------------------------------
+BUFFER_DAYS = 30  # mantém uma margem grande para pegar dados históricos
 
 
-def ensure_output_folder():
-    os.makedirs(OUTPUT_FOLDER, exist_ok=True)
-
+# ---------- FUNÇÕES AUXILIARES ----------
 
 def load_news(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return data
+        return json.load(f)
 
 
 def to_date(dt_iso):
-    if not dt_iso:
-        return None
     try:
         return parser.isoparse(dt_iso)
-    except Exception:
-        try:
-            return datetime.fromisoformat(dt_iso.replace("Z", ""))
-        except Exception:
-            return None
+    except:
+        return None
 
 
 def ticker_for_company(company_name):
-    if company_name in TICKER_MAP:
-        return TICKER_MAP[company_name]
     for k, v in TICKER_MAP.items():
-        if k.lower() in company_name.lower() or company_name.lower() in k.lower():
+        if k.lower() in company_name.lower():
             return v
     return None
 
@@ -88,190 +50,114 @@ def ticker_for_company(company_name):
 def download_prices(ticker, start_date, end_date):
     start = (start_date - timedelta(days=BUFFER_DAYS)).strftime("%Y-%m-%d")
     end = (end_date + timedelta(days=BUFFER_DAYS)).strftime("%Y-%m-%d")
-    try:
-        df = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=False)
-    except Exception as e:
-        print(f"⚠️ Aviso: falha ao baixar {ticker} entre {start} e {end}: {e}")
-        return pd.DataFrame()
-    if df is None or df.empty:
+
+    df = yf.download(ticker, start=start, end=end, progress=False)
+
+    if df.empty:
         return df
-    df.index = pd.to_datetime(df.index)
-    return df
 
-
-def next_trading_day(idx, target_date):
-    """Retorna o próximo pregão a partir da data alvo (inclusive)."""
-    target = pd.to_datetime(target_date).normalize()
-    nxt = idx[idx >= target]
-    return nxt.min() if not nxt.empty else None
-
-
-def nearest_trading_day_corrected(idx, pub_dt):
-    """
-    Se a notícia for após o fechamento (~16:00 BRT), usar o próximo pregão.
-    Caso contrário, usar o pregão do mesmo dia, se existir, senão o próximo.
-    """
-
-    cutoff_hour = 16 
-
-    pub_date = pub_dt.date()
-    pub_time = pub_dt.time()
-
-    # Se notícia saiu depois do fechamento → usar pregão seguinte
-    if pub_time.hour >= cutoff_hour:
-        return next_trading_day(idx, pub_date + timedelta(days=1))
-
-    # Caso saia antes → tentar o mesmo dia
-    pub_day = pd.to_datetime(pub_date)
-
-    if pub_day in idx:
-        return pub_day
-
-    # se não houver pregão no mesmo dia (feriado/fds) → próximo
-    return next_trading_day(idx, pub_date)
-
-
-
-def compute_daily_metrics(prices_df):
-    df = prices_df.copy()
+    df.index = pd.to_datetime(df.index).date
     df["pct_change_prev_close"] = df["Close"].pct_change()
     df["intraday_pct"] = (df["Close"] - df["Open"]) / df["Open"]
     return df
 
 
-def to_float_safe(v):
-    if isinstance(v, pd.Series):
-        if v.size == 0:
-            return None
-        v = v.iloc[0]
-    if v is None:
-        return None
-    if pd.isna(v):
-        return None
-    try:
-        return float(v)
-    except Exception:
-        return None
+def get_last_valid_price(df, target_date):
+    """Retorna o preço mais recente ANTERIOR ou do próprio dia. 
+       Se não houver, retorna None.
+    """
+    if hasattr(target_date, "date"):
+        target_date = target_date.date()
 
+    valid_dates = df.index[df.index <= target_date]
+
+    if not valid_dates.any():
+        return None, None  # sem valores ainda
+    
+    closest = valid_dates[-1]
+    return df.loc[closest], closest
+
+
+# ---------- PROCESSAMENTO PRINCIPAL ----------
 
 def analyze(news_list):
-    resultado_linhas = []
+    resultados = []
 
-    noticias_por_empresa = {}
-    for item in news_list:
-        emp = item.get("empresa", "UNKNOWN")
-        noticias_por_empresa.setdefault(emp, []).append(item)
-
-    for empresa, noticias in noticias_por_empresa.items():
+    for empresa, grupo in pd.DataFrame(news_list).groupby("empresa"):
         ticker = ticker_for_company(empresa)
+
         if not ticker:
-            print(f"⚠️  Aviso: ticker não encontrado para empresa '{empresa}'. Pulando.")
+            print(f"⚠️ Ignorando {empresa}, ticker não encontrado.")
             continue
 
-        datas = [to_date(x.get("data_publicacao")) for x in noticias]
-        datas = [d for d in datas if d is not None]
-        if not datas:
-            print(f"⚠️  Nenhuma data válida para {empresa}. Pulando.")
-            continue
+        datas_publicacao = [to_date(x) for x in grupo["data_publicacao"]]
+        datas_publicacao = [d for d in datas_publicacao if d]
 
-        min_date = min(datas).date() - timedelta(days=WINDOW_BEFORE + BUFFER_DAYS)
-        max_date = max(datas).date() + timedelta(days=WINDOW_AFTER + BUFFER_DAYS)
+        start = min(datas_publicacao).date() - timedelta(days=WINDOW_BEFORE + BUFFER_DAYS)
+        end = max(datas_publicacao).date() + timedelta(days=WINDOW_AFTER + BUFFER_DAYS)
 
-        print(f"🔁 Baixando preços para {empresa} ({ticker}) de {min_date} até {max_date} ...")
-        prices = download_prices(ticker, min_date, max_date)
-        if prices.empty:
-            print(f"❌ Não foi possível obter preços para {ticker}. Pulando empresa.")
-            continue
+        print(f"📈 Baixando preços para {empresa} ({ticker})...")
 
-        prices = compute_daily_metrics(prices)
+        prices = download_prices(ticker, start, end)
 
-        idx = prices.index
+        for _, linha in grupo.iterrows():
+            pub_dt = to_date(linha["data_publicacao"])
+            base_date = pub_dt.date()
 
-        for item in noticias:
-            data_iso = item.get("data_publicacao")
-            pub_dt = to_date(data_iso)
-            if not pub_dt:
-                print(f"  ⚠ notícia sem data: {item.get('titulo','(sem título)')}")
-                continue
-
-            linha_base = {
+            registro = {
                 "empresa": empresa,
                 "ticker": ticker,
-                "titulo": item.get("titulo"),
-                "url": item.get("url"),
-                "data_publicacao_iso": data_iso,
-                "data_publicacao": pub_dt.date().isoformat()
+                "titulo": linha["titulo"],
+                "url": linha["url"],
+                "data_publicacao": base_date.isoformat()
             }
 
-            # Encontra o pregão-base mais próximo da data de publicação
-            base_pregao = nearest_trading_day_corrected(idx, pub_dt)
-            if base_pregao is None:
-                for offset in range(-WINDOW_BEFORE, WINDOW_AFTER + 1):
-                    key = f"d{offset:+d}"
-                    linha_base[f"{key}_date"] = None
-                    linha_base[f"{key}_open"] = None
-                    linha_base[f"{key}_close"] = None
-                    linha_base[f"{key}_pct_change_prev_close"] = None
-                    linha_base[f"{key}_intraday_pct"] = None
-                resultado_linhas.append(linha_base)
-                continue
+            last_valid_price = None
+            last_valid_date = None
 
-            base_pos = prices.index.get_loc(base_pregao)
             for offset in range(-WINDOW_BEFORE, WINDOW_AFTER + 1):
-                day_pos = base_pos + offset
-                key_prefix = f"d{offset:+d}"
-                if day_pos < 0 or day_pos >= len(prices.index):
-                    linha_base[f"{key_prefix}_date"] = None
-                    linha_base[f"{key_prefix}_open"] = None
-                    linha_base[f"{key_prefix}_close"] = None
-                    linha_base[f"{key_prefix}_pct_change_prev_close"] = None
-                    linha_base[f"{key_prefix}_intraday_pct"] = None
-                    continue
+                target_day = base_date + timedelta(days=offset)
+                key = f"d{offset:+d}"
 
-                day_idx = prices.index[day_pos]
-                row = prices.iloc[day_pos]
-                if isinstance(row, pd.DataFrame) and not row.empty:
-                    row = row.iloc[0]
+                price_info, real_price_date = get_last_valid_price(prices, target_day)
 
-                linha_base[f"{key_prefix}_date"] = day_idx.date().isoformat()
-                linha_base[f"{key_prefix}_open"] = float(row["Open"])
-                linha_base[f"{key_prefix}_close"] = float(row["Close"])
+                registro[f"{key}_date"] = target_day.isoformat()
 
-                pct_prev = row["pct_change_prev_close"]
-                intraday = row["intraday_pct"]
+                # Determinar se houve pregão no dia:
+                no_pregao = (real_price_date != target_day)
+                registro[f"{key}_no_pregao"] = bool(no_pregao)
 
-                linha_base[f"{key_prefix}_pct_change_prev_close"] = to_float_safe(pct_prev)
-                linha_base[f"{key_prefix}_intraday_pct"] = to_float_safe(intraday)
+                if price_info is not None:
+                    last_valid_price = price_info
+                    last_valid_date = real_price_date
 
-            resultado_linhas.append(linha_base)
+                if last_valid_price is not None:
+                    registro[f"{key}_open"] = float(last_valid_price["Open"])
+                    registro[f"{key}_close"] = float(last_valid_price["Close"])
+                    registro[f"{key}_pct_change_prev_close"] = float(last_valid_price.get("pct_change_prev_close", 0))
+                    registro[f"{key}_intraday_pct"] = float(last_valid_price.get("intraday_pct", 0))
+                else:
+                    registro[f"{key}_open"] = None
+                    registro[f"{key}_close"] = None
+                    registro[f"{key}_pct_change_prev_close"] = None
+                    registro[f"{key}_intraday_pct"] = None
 
-        # Observação: não gerar resumo neste script (mantemos apenas o CSV de notícias)
-        # If você quiser, remova qualquer trecho de geração de resumo neste bloco.
+            resultados.append(registro)
 
-    df_result = pd.DataFrame(resultado_linhas)
-    ensure_output_folder()
-    if not df_result.empty:
-        df_result.to_csv(OUTPUT_PER_NEWS_CSV, index=False, encoding="utf-8-sig", sep=";")
-        print(f"\n💾 Salvo CSV por notícia: {OUTPUT_PER_NEWS_CSV}")
-    else:
-        print("\n⚠️ Nenhum resultado gerado (df vazio).")
+    df = pd.DataFrame(resultados)
+    df.to_csv(OUTPUT_FILE, index=False, sep=";", encoding="utf-8-sig")
 
-    return df_result
+    print(f"\n💾 Arquivo salvo:\n   {OUTPUT_FILE}")
+    return df
 
 
-def main():
-    print("📌 Iniciando passo 2 — Análise de Dados Financeiros")
-    if not os.path.exists(INPUT_NEWS_FILE):
-        print(f"❌ Arquivo de notícias não encontrado: {INPUT_NEWS_FILE}")
-        print("   Gere o arquivo usando seu pipeline de coleta/processamento (ex.: 02_process_raw.py).")
-        return
-
-    news = load_news(INPUT_NEWS_FILE)
-    print(f"ℹ️  Notícias carregadas: {len(news)} (arquivo: {INPUT_NEWS_FILE})")
-
-    df_result = analyze(news)
-    print("\n✅ Processamento concluído.")
-
+# ---------- EXECUÇÃO ----------
 
 if __name__ == "__main__":
-    main()
+    print("\n🚀 Iniciando análise (dias civis + flag de pregão)...\n")
+    
+    if os.path.exists(INPUT_NEWS_FILE):
+        analyze(load_news(INPUT_NEWS_FILE))
+        print("\n✅ Finalizado com sucesso!")
+    else:
+        print(f"❌ Arquivo de entrada não encontrado: {INPUT_NEWS_FILE}")
