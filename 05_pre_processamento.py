@@ -30,10 +30,15 @@ def preprocessar_texto(texto):
     doc = nlp(" ".join(tokens))
     return [token.lemma_ for token in doc]
 
+# ---------- CONFIGURAÇÃO -------------
+# Saídas de 05 devem ficar em uma pasta separada
+OUTPUT_FOLDER = "pipeline_output/05_pre"
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # ----- LEITURA DO ARQUIVO DE NOTÍCIAS -----
 input_path = "./pipeline_output/01_03/noticias_processadas_15.json"
-output_path = "./pipeline_output/01_03/noticias_processadas_15_PROCESSADAS.json"
+output_path = OUTPUT_FOLDER + "/noticias_pre_processadas_15.json"
+
 
 if not os.path.exists(input_path):
     raise FileNotFoundError(f"Arquivo não encontrado: {input_path}")
