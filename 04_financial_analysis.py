@@ -99,17 +99,37 @@ def download_prices(ticker, start_date, end_date):
     return df
 
 
-def nearest_trading_day(df_index, target_date):
+def next_trading_day(idx, target_date):
+    """Retorna o próximo pregão a partir da data alvo (inclusive)."""
     target = pd.to_datetime(target_date).normalize()
-    if target in df_index:
-        return target
-    prev = df_index[df_index <= target]
-    if not prev.empty:
-        return prev.max()
-    nxt = df_index[df_index >= target]
-    if not nxt.empty:
-        return nxt.min()
-    return None
+    nxt = idx[idx >= target]
+    return nxt.min() if not nxt.empty else None
+
+
+def nearest_trading_day_corrected(idx, pub_dt):
+    """
+    Se a notícia for após o fechamento (~16:00 BRT), usar o próximo pregão.
+    Caso contrário, usar o pregão do mesmo dia, se existir, senão o próximo.
+    """
+
+    cutoff_hour = 16 
+
+    pub_date = pub_dt.date()
+    pub_time = pub_dt.time()
+
+    # Se notícia saiu depois do fechamento → usar pregão seguinte
+    if pub_time.hour >= cutoff_hour:
+        return next_trading_day(idx, pub_date + timedelta(days=1))
+
+    # Caso saia antes → tentar o mesmo dia
+    pub_day = pd.to_datetime(pub_date)
+
+    if pub_day in idx:
+        return pub_day
+
+    # se não houver pregão no mesmo dia (feriado/fds) → próximo
+    return next_trading_day(idx, pub_date)
+
 
 
 def compute_daily_metrics(prices_df):
@@ -165,6 +185,8 @@ def analyze(news_list):
 
         prices = compute_daily_metrics(prices)
 
+        idx = prices.index
+
         for item in noticias:
             data_iso = item.get("data_publicacao")
             pub_dt = to_date(data_iso)
@@ -181,41 +203,50 @@ def analyze(news_list):
                 "data_publicacao": pub_dt.date().isoformat()
             }
 
+            # Encontra o pregão-base mais próximo da data de publicação
+            base_pregao = nearest_trading_day_corrected(idx, pub_dt)
+            if base_pregao is None:
+                for offset in range(-WINDOW_BEFORE, WINDOW_AFTER + 1):
+                    key = f"d{offset:+d}"
+                    linha_base[f"{key}_date"] = None
+                    linha_base[f"{key}_open"] = None
+                    linha_base[f"{key}_close"] = None
+                    linha_base[f"{key}_pct_change_prev_close"] = None
+                    linha_base[f"{key}_intraday_pct"] = None
+                resultado_linhas.append(linha_base)
+                continue
+
+            base_pos = prices.index.get_loc(base_pregao)
             for offset in range(-WINDOW_BEFORE, WINDOW_AFTER + 1):
-                target_dt = (pub_dt + timedelta(days=offset)).date()
-                pregiao = nearest_trading_day(prices.index, target_dt)
+                day_pos = base_pos + offset
                 key_prefix = f"d{offset:+d}"
-                if pregiao is None:
+                if day_pos < 0 or day_pos >= len(prices.index):
                     linha_base[f"{key_prefix}_date"] = None
                     linha_base[f"{key_prefix}_open"] = None
                     linha_base[f"{key_prefix}_close"] = None
                     linha_base[f"{key_prefix}_pct_change_prev_close"] = None
                     linha_base[f"{key_prefix}_intraday_pct"] = None
-                else:
-                    row = prices.loc[pregiao]
-                    if isinstance(row, pd.DataFrame):
-                        if len(row) == 0:
-                            linha_base[f"{key_prefix}_date"] = None
-                            linha_base[f"{key_prefix}_open"] = None
-                            linha_base[f"{key_prefix}_close"] = None
-                            linha_base[f"{key_prefix}_pct_change_prev_close"] = None
-                            linha_base[f"{key_prefix}_intraday_pct"] = None
-                            continue
-                        row = row.iloc[0]
+                    continue
 
-                    linha_base[f"{key_prefix}_date"] = pregiao.date().isoformat()
-                    linha_base[f"{key_prefix}_open"] = float(row["Open"])
-                    linha_base[f"{key_prefix}_close"] = float(row["Close"])
+                day_idx = prices.index[day_pos]
+                row = prices.iloc[day_pos]
+                if isinstance(row, pd.DataFrame) and not row.empty:
+                    row = row.iloc[0]
 
-                    pct_prev = row["pct_change_prev_close"]
-                    intraday = row["intraday_pct"]
+                linha_base[f"{key_prefix}_date"] = day_idx.date().isoformat()
+                linha_base[f"{key_prefix}_open"] = float(row["Open"])
+                linha_base[f"{key_prefix}_close"] = float(row["Close"])
 
-                    linha_base[f"{key_prefix}_pct_change_prev_close"] = to_float_safe(pct_prev)
-                    linha_base[f"{key_prefix}_intraday_pct"] = to_float_safe(intraday)
+                pct_prev = row["pct_change_prev_close"]
+                intraday = row["intraday_pct"]
+
+                linha_base[f"{key_prefix}_pct_change_prev_close"] = to_float_safe(pct_prev)
+                linha_base[f"{key_prefix}_intraday_pct"] = to_float_safe(intraday)
 
             resultado_linhas.append(linha_base)
 
-        df_emp = pd.DataFrame(resultado_linhas)
+        # Observação: não gerar resumo neste script (mantemos apenas o CSV de notícias)
+        # If você quiser, remova qualquer trecho de geração de resumo neste bloco.
 
     df_result = pd.DataFrame(resultado_linhas)
     ensure_output_folder()
