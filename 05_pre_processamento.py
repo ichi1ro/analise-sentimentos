@@ -11,15 +11,29 @@ import json
 import os
 
 # ---- DOWNLOAD DOS RECURSOS NECESSÁRIOS ----
-nltk.download('punkt')
-nltk.download('punkt_tab')  # ← NECESSÁRIO para evitar erro!
-nltk.download('stopwords')
+try:
+    nltk.download('punkt', quiet=True)
+    nltk.download('punkt_tab', quiet=True)
+    nltk.download('stopwords', quiet=True)
+    stop_words = set(stopwords.words('portuguese'))
+except:
+    # Fallback: lista manual de stopwords em português
+    stop_words = set([
+        'a', 'o', 'e', 'é', 'de', 'da', 'do', 'em', 'um', 'uma', 'os', 'as', 'dos', 'das',
+        'para', 'com', 'no', 'na', 'que', 'por', 'se', 'ao', 'mais', 'como', 'mas', 'foi',
+        'ao', 'ele', 'das', 'tem', 'à', 'seu', 'sua', 'ou', 'ser', 'quando', 'muito', 'há',
+        'nos', 'já', 'está', 'eu', 'também', 'só', 'pelo', 'pela', 'até', 'isso', 'ela',
+        'entre', 'era', 'depois', 'sem', 'mesmo', 'aos', 'ter', 'seus', 'quem', 'nas', 'me',
+        'esse', 'eles', 'estão', 'você', 'tinha', 'foram', 'essa', 'num', 'nem', 'suas',
+        'meu', 'às', 'minha', 'têm', 'numa', 'pelos', 'elas', 'havia', 'seja', 'qual',
+        'será', 'nós', 'tenho', 'lhe', 'deles', 'essas', 'esses', 'pelas', 'este', 'fosse',
+        'dele', 'tu', 'te', 'vocês', 'vos', 'lhes', 'meus', 'minhas', 'teu', 'tua', 'teus',
+        'tuas', 'nosso', 'nossa', 'nossos', 'nossas', 'dela', 'delas', 'esta', 'estes',
+        'estas', 'aquele', 'aquela', 'aqueles', 'aquelas', 'isto', 'aquilo'
+    ])
 
 # Carregar modelo de língua portuguesa para lematização
-nlp = spacy.load("pt_core_news_sm")  # Instale com: python -m spacy download pt_core_news_sm
-
-# Lista de stopwords
-stop_words = set(stopwords.words('portuguese'))
+nlp = spacy.load("pt_core_news_sm")
 
 # Função principal
 def preprocessar_texto(texto):
