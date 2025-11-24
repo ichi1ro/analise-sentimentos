@@ -9,6 +9,9 @@ setlocal enabledelayedexpansion
 ::   run_pipeline.cmd process
 ::   run_pipeline.cmd export
 ::   run_pipeline.cmd analyze
+::   run_pipeline.cmd textprep
+::   run_pipeline.cmd sentiment
+::   run_pipeline.cmd correlation
 ::   run_pipeline.cmd all
 :: ============================================================
 
@@ -16,10 +19,16 @@ setlocal enabledelayedexpansion
 set "BASE_OUT=pipeline_output"
 set "OUT_01_03=%BASE_OUT%\01_03"
 set "OUT_04_FETCH=%BASE_OUT%\04_fetch"
+set "OUT_05_PRE=%BASE_OUT%\05_pre"
+set "OUT_06_SENTIMENT=%BASE_OUT%\06_sentiment"
+set "OUT_07_COR=%BASE_OUT%\07_correlation"
 
 :: Garantir diretórios existem
 if not exist "%OUT_01_03%" mkdir "%OUT_01_03%" >nul 2>&1
 if not exist "%OUT_04_FETCH%" mkdir "%OUT_04_FETCH%" >nul 2>&1
+if not exist "%OUT_05_PRE%" mkdir "%OUT_05_PRE%" >nul 2>&1
+if not exist "%OUT_06_SENTIMENT%" mkdir "%OUT_06_SENTIMENT%" >nul 2>&1
+if not exist "%OUT_07_COR%" mkdir "%OUT_07_COR%" >nul 2>&1
 
 :: ----------------- Função de ajuda --------------------------
 if "%1"=="" goto :help
@@ -40,8 +49,14 @@ if "%1"=="export" goto :exportcsv
 :: ----------------- Passo 4: Analyze -------------------------
 if "%1"=="analyze" goto :analyze
 
-:: ----------------- Passo 5: Pre Processamnent ---------------
+:: ----------------- Passo 5: Pré-processamento texto ---------
 if "%1"=="textprep" goto :textprep
+
+:: ----------------- Passo 6: Sentimento (06_sentiment_analysis.py) ---
+if "%1"=="sentiment" goto :sentiment
+
+:: ----------------- Passo 7: Correlação (07_correlation_analysis.py) ---
+if "%1"=="correlation" goto :correlation
 
 :: ----------------- Pipeline completo ------------------------
 if "%1"=="all" goto :all
@@ -51,17 +66,16 @@ goto :help
 
 :: ============================================================
 :: FUNÇÃO: Instala dependências Python
+:: Inclui pacotes para 06 (sentimento) e 07 (correlação)
 :: ============================================================
 :setup
 echo ========================================
 echo CONFIGURANDO AMBIENTE PYTHON
 echo ========================================
 
-:: Verifica se Python está instalado
 python --version >nul 2>&1
 IF %ERRORLEVEL% NEQ 0 (
     echo ERRO: Python nao encontrado no PATH.
-    echo Instale Python 3 primeiro.
     exit /b 1
 )
 
@@ -73,38 +87,33 @@ call venv\Scripts\activate.bat
 
 echo Instalando dependencias...
 pip install --upgrade pip
-pip install tls-client pandas numpy yfinance beautifulsoup4 requests lxml nltk spacy matplotlib
+:: Pacotes comuns
+pip install tls-client pandas numpy yfinance beautifulsoup4 requests lxml nltk spacy matplotlib seaborn scikit-learn openpyxl
+:: Pacotes para sentiment e correlacao
+pip install transformers torch torchvision torchaudio tqdm scipy
 
-echo Instalando modelo de linguagem do spaCy...
+echo Instalando modelo SpaCy...
 python -m spacy download pt_core_news_sm
 
-echo Instalacao concluida!
-echo Para ativar o ambiente depois, use:
-echo   call venv\Scripts\activate.bat
+echo Ambiente configurado com sucesso!
 exit /b 0
 
 
 
 :: ============================================================
-:: PASSO 1 — Fetch (Coleta de Notícias)
+:: PASSO 1 — Fetch
 :: ============================================================
 :fetch
 echo.
-echo ========================================
-echo [1/4] Coletando noticias (01_fetch_raw.py)
-echo ========================================
-python 01_fetch_raw.py
-IF %ERRORLEVEL% NEQ 0 (
-    echo ERRO ao executar 01_fetch_raw.py
-    exit /b %ERRORLEVEL%
-)
+echo =============== FETCH (01_fetch_raw.py) ===============
+python 01_fetch_raw.py || (echo ERRO && exit /b)
 
 :: Copia de outputs para a pasta consolidada (01_03)
 IF EXIST "noticias_processadas.json" (
-    copy /Y "noticias_processadas.json" "%OUT_01_03%\noticias_processadas.json" >nul
+    copy /Y "noticias_processadas.json" "%OUT_01_03%" >nul
 )
 IF EXIST "raw_infomoney.json" (
-    copy /Y "raw_infomoney.json" "%OUT_01_03%\raw_infomoney.json" >nul
+    copy /Y "raw_infomoney.json" "%OUT_01_03%" >nul
 )
 
 exit /b 0
@@ -112,22 +121,16 @@ exit /b 0
 
 
 :: ============================================================
-:: PASSO 2 — Processamento (02_process_raw.py)
+:: PASSO 2 — Process
 :: ============================================================
 :process
 echo.
-echo ========================================
-echo [2/4] Processando noticias (02_process_raw.py)
-echo ========================================
-python 02_process_raw.py
-IF %ERRORLEVEL% NEQ 0 (
-    echo ERRO ao executar 02_process_raw.py
-    exit /b %ERRORLEVEL%
-)
+echo =============== PROCESS (02_process_raw.py) ===============
+python 02_process_raw.py || (echo ERRO && exit /b)
 
 :: Copia de outputs para a pasta consolidada (01_03)
 IF EXIST "noticias_processadas.json" (
-    copy /Y "noticias_processadas.json" "%OUT_01_03%\noticias_processadas.json" >nul
+    copy /Y "noticias_processadas.json" "%OUT_01_03%" >nul
 )
 
 exit /b 0
@@ -135,25 +138,25 @@ exit /b 0
 
 
 :: ============================================================
-:: PASSO 3 — Exportação para CSV (03_export_csv.py)
+:: PASSO 3 — Export CSV
 :: ============================================================
 :exportcsv
 echo.
-echo ========================================
-echo [3/4] Exportando CSV (03_export_csv.py)
-echo ========================================
-python 03_export_csv.py
-IF %ERRORLEVEL% NEQ 0 (
-    echo ERRO ao executar 03_export_csv.py
-    exit /b %ERRORLEVEL%
-)
+echo =============== EXPORT CSV (03_export_csv.py) ===============
+python 03_export_csv.py || (echo ERRO && exit /b)
 
 :: Copia de outputs para a pasta consolidada (01_03)
 IF EXIST "%BASE_OUT%\finance_analysis_output\noticias_com_precos.csv" (
-    copy /Y "%BASE_OUT%\finance_analysis_output\noticias_com_precos.csv" "%OUT_01_03%\noticias_com_precos.csv" >nul
+    copy /Y "%BASE_OUT%\finance_analysis_output\noticias_com_precos.csv" "%OUT_01_03%" >nul
+)
+IF EXIST "%BASE_OUT%\finance_analysis_output\noticias_com_precos_15.csv" (
+    copy /Y "%BASE_OUT%\finance_analysis_output\noticias_com_precos_15.csv" "%OUT_01_03%" >nul
 )
 IF EXIST "%BASE_OUT%\finance_analysis_output\resumo_por_empresa.csv" (
-    copy /Y "%BASE_OUT%\finance_analysis_output\resumo_por_empresa.csv" "%OUT_01_03%\resumo_por_empresa.csv" >nul
+    copy /Y "%BASE_OUT%\finance_analysis_output\resumo_por_empresa.csv" "%OUT_01_03%" >nul
+)
+IF EXIST "%BASE_OUT%\finance_analysis_output\resumo_por_empresa_15.csv" (
+    copy /Y "%BASE_OUT%\finance_analysis_output\resumo_por_empresa_15.csv" "%OUT_01_03%" >nul
 )
 
 exit /b 0
@@ -161,51 +164,79 @@ exit /b 0
 
 
 :: ============================================================
-:: PASSO 4 — Análise Financeira
+:: PASSO 4 — Analyze
 :: ============================================================
 :analyze
 echo.
-echo ========================================
-echo [4/4] Analise Financeira (04_financial_analysis.py)
-echo ========================================
-python 04_financial_analysis.py
-IF %ERRORLEVEL% NEQ 0 (
-    echo ERRO ao executar 04_financial_analysis.py
-    exit /b %ERRORLEVEL%
+echo =============== ANALYZE (04_financial_analysis.py) ===============
+python 04_financial_analysis.py || (echo ERRO && exit /b %ERRORLEVEL%)
+
+:: Copia de outputs para a pasta 04_fetch
+IF EXIST "pipeline_output/noticias_com_precos.csv" (
+    copy /Y "pipeline_output/noticias_com_precos.csv" "%OUT_04_FETCH%" >nul
+)
+IF EXIST "pipeline_output/noticias_com_precos_15.csv" (
+    copy /Y "pipeline_output/noticias_com_precos_15.csv" "%OUT_04_FETCH%" >nul
 )
 
-:: Copia de outputs para a pasta de 04_fetch (novas saídas ficam em pipeline_output/04_fetch)
-IF EXIST "pipeline_output/noticias_com_precos.csv" (
-    copy /Y "pipeline_output/noticias_com_precos.csv" "%OUT_04_FETCH%\noticias_com_precos.csv" >nul
-)
-IF EXIST "pipeline_output/resumo_por_empresa.csv" (
-    copy /Y "pipeline_output/resumo_por_empresa.csv" "%OUT_04_FETCH%\resumo_por_empresa.csv" >nul
+:: Copia de outputs para 07 (corrigir conforme necessário)
+IF EXIST "pipeline_output/07_correlation/dados_completos.csv" (
+    copy /Y "pipeline_output/07_correlation/dados_completos.csv" "%OUT_07_COR%" >nul
 )
 
 exit /b 0
 
 
+
 :: ============================================================
-:: PASSO 5 — Pré-processamento de texto para Sentimento
+:: PASSO 5 — Pré-processamento texto
 :: ============================================================
 :textprep
 echo.
-echo ========================================
-echo [5/5] Pre-processamento de texto (05_pre_processamento.py)
-echo ========================================
-python 05_pre_processamento.py
-IF %ERRORLEVEL% NEQ 0 (
-    echo ERRO ao executar 05_pre_processamento.py
-    exit /b %ERRORLEVEL%
+echo =============== TEXT PREP (05_pre_processamento.py) ===============
+python 05_pre_processamento.py || (echo ERRO && exit /b)
+
+:: Copia do output do pré-processamento
+IF EXIST "pipeline_output/05_pre/noticias_pre_processadas_15.json" (
+    copy /Y "pipeline_output/05_pre/noticias_pre_processadas_15.json" "%OUT_05_PRE%" >nul
 )
 
-:: Copia o arquivo final para a pasta consolidada
-IF EXIST "01_03\noticias_processadas_15_PROCESSADAS.json" (
-    copy /Y "01_03\noticias_processadas_15_PROCESSADAS.json" "%OUT_01_03%\noticias_processadas_15_PROCESSADAS.json" >nul
-)
-
-echo Texto pre-processado com sucesso!
 exit /b 0
+
+
+
+:: ============================================================
+:: PASSO 6 — Sentimento (06_sentiment_analysis.py)
+:: ============================================================
+:sentiment
+echo.
+echo =============== SENTIMENTO (06_sentiment_analysis.py) ===============
+python 06_sentiment_analysis.py || (echo ERRO && exit /b %ERRORLEVEL%)
+
+:: Copia outputs (se desejado) para consolidação
+IF EXIST "pipeline_output/06_sentiment/noticias_com_sentimentos.json" (
+    copy /Y "pipeline_output/06_sentiment/noticias_com_sentimentos.json" "%OUT_06_SENTIMENT%" >nul
+)
+
+exit /b 0
+
+
+
+:: ============================================================
+:: PASSO 7 — Correlação (07_correlation_analysis.py)
+:: ============================================================
+:correlation
+echo.
+echo =============== CORRELAÇÃO (07_correlation_analysis.py) ===============
+python 07_correlation_analysis.py || (echo ERRO && exit /b %ERRORLEVEL%)
+
+:: Copia outputs (se desejar) para consolidação
+IF EXIST "pipeline_output/07_correlation/dados_completos.csv" (
+    copy /Y "pipeline_output/07_correlation/dados_completos.csv" "%OUT_07_COR%" >nul
+)
+
+exit /b 0
+
 
 
 :: ============================================================
@@ -217,9 +248,12 @@ call :process
 call :exportcsv
 call :analyze
 call :textprep
+call :sentiment
+call :correlation
+
 echo.
 echo ========================================
-echo Pipeline executado com sucesso!
+echo PIPELINE EXECUTADO COM SUCESSO!
 echo ========================================
 exit /b 0
 
@@ -231,16 +265,14 @@ exit /b 0
 :help
 echo.
 echo Uso:
-echo   run_pipeline.cmd setup     - Instala dependencias Python
-echo   run_pipeline.cmd fetch     - Executa so a coleta
-echo   run_pipeline.cmd process   - Executa so o processamento
-echo   run_pipeline.cmd export    - Exporta CSV
-echo   run_pipeline.cmd analyze   - Faz analise financeira
-echo   run_pipeline.cmd textprep  - Pre-processa o texto para IA / Sentimento
-echo   run_pipeline.cmd all       - Roda tudo em ordem
-echo.
-echo Observação:
-echo - Saídas do 01/02/03 passam para: %BASE_OUT%\01_03
-echo - Saídas do 04 são salvas em: %BASE_OUT%\04_fetch
+echo   run_pipeline.cmd setup
+echo   run_pipeline.cmd fetch
+echo   run_pipeline.cmd process
+echo   run_pipeline.cmd export
+echo   run_pipeline.cmd analyze
+echo   run_pipeline.cmd textprep
+echo   run_pipeline.cmd sentiment
+echo   run_pipeline.cmd correlation
+echo   run_pipeline.cmd all
 echo.
 exit /b 0
