@@ -54,55 +54,82 @@ print("📂 Carregando dados de preços...")
 df_prices = pd.read_csv(INPUT_PRICES, encoding='utf-8', sep=';')
 print(f"✅ {len(df_prices)} registros de preços carregados\n")
 
-# ---------- PREPARAR DADOS ----------
+# ---------- PREPARAR DADOS (JOIN mais robusto) ----------
 
 print("🔄 Preparando dados para análise...")
 
-# Criar DataFrame unificado
-dados = []
+# Normalizar sentimento para DataFrame
+df_sent = pd.DataFrame(noticias_sentiment)
 
-for noticia in noticias_sentiment:
-    empresa = noticia['empresa']
-    titulo = noticia['titulo']
-    # Extrair apenas a data (sem hora/timezone)
-    data_publicacao = noticia['data_publicacao'].split('T')[0]
-    sentimento_original = noticia['sentimento_original']
-    sentimento_preprocessado = noticia['sentimento_preprocessado']
+# Garantir colunas necessárias: data_publicacao como date, url (opcional)
+if 'data_publicacao' in df_sent.columns:
+    df_sent['data_publicacao'] = pd.to_datetime(df_sent['data_publicacao'], errors='coerce').dt.date
+else:
+    df_sent['data_publicacao'] = pd.NaT
 
-    # Buscar dados de preço correspondentes
-    match = df_prices[
-        (df_prices['empresa'] == empresa) &
-        (df_prices['titulo'] == titulo) &
-        (df_prices['data_publicacao'] == data_publicacao)
-    ]
+# Normalizar preços
+df_prices = df_prices.copy()
+if 'data_publicacao' in df_prices.columns:
+    df_prices['data_publicacao'] = pd.to_datetime(df_prices['data_publicacao'], errors='coerce').dt.date
+else:
+    df_prices['data_publicacao'] = pd.NaT
 
-    if len(match) == 1:
-        row = match.iloc[0]
+# Tenta junção pelo máximo de robustez:
+# 1) se houver URL em ambos, faz merge por empresa + url
+# 2) senão, merge por empresa + data_publicacao
+has_url_sent = 'url' in df_sent.columns
+has_url_prices = 'url' in df_prices.columns
 
-        # Variações de preço disponíveis (d-2 até d+2)
-        # Colunas no CSV: d-2_pct_change_prev_close, d-1_pct_change_prev_close, etc.
-        variacoes = {}
-        for periodo in ['d-2', 'd-1', 'd+0', 'd+1', 'd+2']:
-            col_name = f'{periodo}_pct_change_prev_close'
-            if col_name in df_prices.columns:
-                variacoes[f'variacao_{periodo}'] = row[col_name]
+if has_url_sent and has_url_prices:
+    merged = pd.merge(
+        df_sent,
+        df_prices,
+        how='left',
+        left_on=['empresa', 'url'],
+        right_on=['empresa', 'url'],
+        suffixes=('_sent', '_price')
+    )
+else:
+    merged = pd.merge(
+        df_sent,
+        df_prices,
+        how='left',
+        left_on=['empresa', 'data_publicacao'],
+        right_on=['empresa', 'data_publicacao'],
+        suffixes=('__sent', '_price')
+    )
 
-        # Adicionar aos dados
-        dados.append({
-            'empresa': empresa,
-            'titulo': titulo[:80],  # Truncar título
-            'data_publicacao': data_publicacao,
-            'sentimento_original': sentimento_original,
-            'sentimento_preprocessado': sentimento_preprocessado,
-            **variacoes  # Adicionar todas as variações
-        })
+# Detecção de colunas de variação de preço
+# As colunas costumam vir como: d-2_pct_change_prev_close, d-1_pct_change_prev_close, d+0_pct_change_prev_close, etc.
+price_variation_cols = [c for c in merged.columns if c.endswith('_pct_change_prev_close')]
+variacoes_map = {}  # map: periodo -> coluna original
+periodos = ['d-2', 'd-1', 'd+0', 'd+1', 'd+2']  # manter formato que deve aparecer no CSV
+for col in price_variation_cols:
+    # extrair o periodo do nome da coluna
+    # exemplo: 'd-2_pct_change_prev_close' -> 'd-2'
+    periodo = col.replace('_pct_change_prev_close', '')
+    variacoes_map[periodo] = col
 
-# Criar DataFrame
-df = pd.DataFrame(dados)
-print(f"✅ {len(df)} notícias com dados completos (sentimento + preços)\n")
+# Adicionar colunas padronizadas de variação
+for periodo, col in variacoes_map.items():
+    merged[f'variacao_{periodo}'] = merged[col]
+
+# Selecionar apenas as colunas necessárias para o DataFrame final
+variacao_columns_present = [f'variacao_{p}' for p in periodos if f'variacao_{p}' in merged.columns]
+selected_cols = ['empresa', 'titulo', 'data_publicacao', 'sentimento_original', 'sentimento_preprocessado'] + variacao_columns_present
+
+df = merged.reindex(columns=selected_cols)
+
+# Tratar título caso não exista
+if 'titulo' not in df.columns:
+    df['titulo'] = ''
+
+# Filtrar notícias com dados completos (sentimento + preços)
+df_complete = df.dropna(subset=[c for c in df.columns if c.startswith('variacao_')], how='any')
+print(f"✅ {len(df_complete)} notícias com dados completos (sentimento + preços)\n")
 
 # Salvar dados unificados
-df.to_csv(OUTPUT_CSV, index=False, encoding='utf-8')
+df_complete.to_csv(OUTPUT_CSV, index=False, encoding='utf-8')
 print(f"💾 Dados completos salvos em: {OUTPUT_CSV}\n")
 
 # ---------- ANÁLISE DE CORRELAÇÃO ----------
@@ -111,8 +138,8 @@ print(f"{'='*60}")
 print("CÁLCULO DE CORRELAÇÕES DE PEARSON")
 print(f"{'='*60}\n")
 
-# Colunas de variação de preço
-colunas_variacao = [col for col in df.columns if col.startswith('variacao_d')]
+# Colunas de variação de preço (as ones disponíveis)
+colunas_variacao = [col for col in df_complete.columns if col.startswith('variacao_')]
 
 # Resultados de correlação
 resultados = []
@@ -127,12 +154,11 @@ with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
     f.write("-" * 60 + "\n\n")
 
     for col_var in colunas_variacao:
-        # Filtrar valores não nulos
-        mask = df[col_var].notna()
-        x = df.loc[mask, 'sentimento_original']
-        y = df.loc[mask, col_var]
+        mask = df_complete[col_var].notna()
+        x = df_complete.loc[mask, 'sentimento_original']
+        y = df_complete.loc[mask, col_var]
 
-        if len(x) >= 3:  # Mínimo de 3 pontos para correlação
+        if len(x) >= 3:
             corr, p_value = pearsonr(x, y)
 
             resultado = {
@@ -158,10 +184,9 @@ with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
     f.write("-" * 60 + "\n\n")
 
     for col_var in colunas_variacao:
-        # Filtrar valores não nulos
-        mask = df[col_var].notna()
-        x = df.loc[mask, 'sentimento_preprocessado']
-        y = df.loc[mask, col_var]
+        mask = df_complete[col_var].notna()
+        x = df_complete.loc[mask, 'sentimento_preprocessado']
+        y = df_complete.loc[mask, col_var]
 
         if len(x) >= 3:
             corr, p_value = pearsonr(x, y)
@@ -191,24 +216,35 @@ with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
     df_resultados = pd.DataFrame(resultados)
 
     f.write("MELHORES CORRELAÇÕES (por valor absoluto):\n\n")
-    top_correlacoes = df_resultados.nlargest(5, 'correlacao', keep='all')
-    for idx, row in top_correlacoes.iterrows():
-        f.write(f"  {row['tipo']} - {row['periodo']}: {row['correlacao']:.4f} ")
-        f.write(f"(p={row['p_value']:.4f}, n={row['n_amostras']})\n")
+    if not df_resultados.empty:
+        top_correlacoes = df_resultados.nlargest(5, 'correlacao', keep='all')
+        for idx, row in top_correlacoes.iterrows():
+            f.write(f"  {row['tipo']} - {row['periodo']}: {row['correlacao']:.4f} ")
+            f.write(f"(p={row['p_value']:.4f}, n={row['n_amostras']})\n")
+    else:
+        f.write("Nenhuma correlação significativa calculada.\n")
 
     f.write("\n")
 
     # Média de correlações por tipo
-    media_original = df_resultados[df_resultados['tipo'] == 'Original']['correlacao'].mean()
-    media_prep = df_resultados[df_resultados['tipo'] == 'Pré-processado']['correlacao'].mean()
+    if not df_resultados.empty:
+        media_original = df_resultados[df_resultados['tipo'] == 'Original']['correlacao'].mean()
+        media_prep = df_resultados[df_resultados['tipo'] == 'Pré-processado']['correlacao'].mean()
+    else:
+        media_original = float('nan')
+        media_prep = float('nan')
 
     f.write(f"MÉDIA DE CORRELAÇÕES:\n")
     f.write(f"  Original: {media_original:.4f}\n")
     f.write(f"  Pré-processado: {media_prep:.4f}\n\n")
 
     # Correlações significativas
-    sig_original = len(df_resultados[(df_resultados['tipo'] == 'Original') & (df_resultados['p_value'] < 0.05)])
-    sig_prep = len(df_resultados[(df_resultados['tipo'] == 'Pré-processado') & (df_resultados['p_value'] < 0.05)])
+    if not df_resultados.empty:
+        sig_original = len(df_resultados[(df_resultados['tipo'] == 'Original') & (df_resultados['p_value'] < 0.05)])
+        sig_prep = len(df_resultados[(df_resultados['tipo'] == 'Pré-processado') & (df_resultados['p_value'] < 0.05)])
+    else:
+        sig_original = 0
+        sig_prep = 0
 
     f.write(f"CORRELAÇÕES SIGNIFICATIVAS (p<0.05):\n")
     f.write(f"  Original: {sig_original}/{len(colunas_variacao)}\n")
@@ -217,12 +253,18 @@ with open(OUTPUT_STATS, 'w', encoding='utf-8') as f:
 print(f"💾 Estatísticas salvas em: {OUTPUT_STATS}\n")
 
 # Imprimir resumo no console
-print("RESUMO DAS CORRELAÇÕES:")
+print("RESUMO DAS CORRELALAÇÕES:")
 print("-" * 60)
-print(f"Média de correlação (Original): {media_original:.4f}")
-print(f"Média de correlação (Pré-processado): {media_prep:.4f}")
-print(f"Correlações significativas (Original): {sig_original}/{len(colunas_variacao)}")
-print(f"Correlações significativas (Pré-processado): {sig_prep}/{len(colunas_variacao)}\n")
+if 'media_original' in locals() and 'media_prep' in locals():
+    print(f"Média de correlação (Original): {media_original:.4f}")
+    print(f"Média de correlação (Pré-processado): {media_prep:.4f}")
+else:
+    print("Médias não disponíveis (sem dados de correlação).")
+if 'sig_original' in locals() and 'sig_prep' in locals():
+    print(f"Correlações significativas (Original): {sig_original}/{len(colunas_variacao)}")
+    print(f"Correlações significativas (Pré-processado): {sig_prep}/{len(colunas_variacao)}\n")
+else:
+    print("Correlações significativas não disponíveis.\n")
 
 # ---------- VISUALIZAÇÕES ----------
 
@@ -236,9 +278,9 @@ print("📊 Gerando scatter plot (Sentimento vs Variação D+1)...")
 fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
 # Original
-mask = df['variacao_d+1'].notna()
-x_orig = df.loc[mask, 'sentimento_original']
-y_orig = df.loc[mask, 'variacao_d+1']
+mask = df_complete['variacao_d+1'].notna()
+x_orig = df_complete.loc[mask, 'sentimento_original']
+y_orig = df_complete.loc[mask, 'variacao_d+1']
 corr_orig, p_orig = pearsonr(x_orig, y_orig) if len(x_orig) >= 3 else (0, 1)
 
 axes[0].scatter(x_orig, y_orig, alpha=0.6, s=100, color='steelblue')
@@ -250,8 +292,8 @@ axes[0].axhline(y=0, color='red', linestyle='--', alpha=0.5)
 axes[0].axvline(x=0, color='red', linestyle='--', alpha=0.5)
 
 # Pré-processado
-x_prep = df.loc[mask, 'sentimento_preprocessado']
-y_prep = df.loc[mask, 'variacao_d+1']
+x_prep = df_complete.loc[mask, 'sentimento_preprocessado']
+y_prep = df_complete.loc[mask, 'variacao_d+1']
 corr_prep, p_prep = pearsonr(x_prep, y_prep) if len(x_prep) >= 3 else (0, 1)
 
 axes[1].scatter(x_prep, y_prep, alpha=0.6, s=100, color='darkorange')
@@ -271,22 +313,22 @@ print("✅ Scatter plot salvo\n")
 print("📊 Gerando heatmap de correlações...")
 
 # Preparar matriz de correlações
-periodos = ['d-2', 'd-1', 'd0', 'd+1', 'd+2']
+periodos = ['d-2', 'd-1', 'd+0', 'd+1', 'd+2']
 matriz_corr = np.zeros((2, len(periodos)))
 
 for i, periodo in enumerate(periodos):
     col = f'variacao_{periodo}'
-    if col in df.columns:
-        mask = df[col].notna()
+    if col in df_complete.columns:
+        mask = df_complete[col].notna()
 
         # Original
-        if len(df.loc[mask, 'sentimento_original']) >= 3:
-            corr_orig, _ = pearsonr(df.loc[mask, 'sentimento_original'], df.loc[mask, col])
+        if len(df_complete.loc[mask, 'sentimento_original']) >= 3:
+            corr_orig, _ = pearsonr(df_complete.loc[mask, 'sentimento_original'], df_complete.loc[mask, col])
             matriz_corr[0, i] = corr_orig
 
         # Pré-processado
-        if len(df.loc[mask, 'sentimento_preprocessado']) >= 3:
-            corr_prep, _ = pearsonr(df.loc[mask, 'sentimento_preprocessado'], df.loc[mask, col])
+        if len(df_complete.loc[mask, 'sentimento_preprocessado']) >= 3:
+            corr_prep, _ = pearsonr(df_complete.loc[mask, 'sentimento_preprocessado'], df_complete.loc[mask, col])
             matriz_corr[1, i] = corr_prep
 
 fig, ax = plt.subplots(figsize=(10, 4))
@@ -332,14 +374,14 @@ print("📊 Gerando box plots (distribuição por empresa)...")
 fig, axes = plt.subplots(1, 2, figsize=(15, 6))
 
 # Original
-df.boxplot(column='sentimento_original', by='empresa', ax=axes[0])
+df_complete.boxplot(column='sentimento_original', by='empresa', ax=axes[0])
 axes[0].set_title('Distribuição de Sentimento Original por Empresa', fontsize=12)
 axes[0].set_xlabel('Empresa', fontsize=11)
 axes[0].set_ylabel('Sentimento', fontsize=11)
 axes[0].get_figure().suptitle('')  # Remove título automático
 
 # Pré-processado
-df.boxplot(column='sentimento_preprocessado', by='empresa', ax=axes[1])
+df_complete.boxplot(column='sentimento_preprocessado', by='empresa', ax=axes[1])
 axes[1].set_title('Distribuição de Sentimento Pré-processado por Empresa', fontsize=12)
 axes[1].set_xlabel('Empresa', fontsize=11)
 axes[1].set_ylabel('Sentimento', fontsize=11)
