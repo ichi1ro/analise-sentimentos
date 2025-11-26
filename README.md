@@ -1,6 +1,6 @@
 # Pipeline IA - Guia de Execução no Windows (CMD)
 
-Este README descreve como rodar o pipeline de IA no Windows usando o script CMD fornecido. O workflow é dividido em etapas (setup, fetch, process, export, analyze, text-prep, sentiment, correlação) e pode ser executado como um todo ou por etapas. Entre no ambiente virtual do python gerado pelo passo de setup, e depois rode o comando para entrar no ambiente virtual: venv\Scripts\activate.bat
+Este README descreve como rodar o pipeline de IA no Windows usando o script CMD fornecido. O workflow é dividido em etapas (setup, fetch, process, export, analyze, text-prep, sentiment, correlação) e pode ser executado como um todo ou por etapas. Entre no ambiente virtual do python gerado pelo passo de setup, e depois rode o comando para entrar no ambiente virtual: .\venv\Scripts\activate.ps1
 
 ## 1) Visão geral
 - Fluxo: Setup -> Fetch -> Process -> Export -> Analyze -> Textprep -> Sentiment -> Correlation -> All
